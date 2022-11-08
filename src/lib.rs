@@ -133,35 +133,6 @@ impl Router {
     }
 }
 
-pub fn oauth_client() -> rust_keycloak::oauth::OAuthClient {
-    dotenv::dotenv().ok();
-
-    let client_id = std::env::var("CLIENT_ID").expect("CLIENT_ID must be set");
-    let client_secret = std::env::var("CLIENT_SECRET").expect("CLIENT_SECRET must be set");
-    let well_known_url = std::env::var("OAUTH_WELL_KNOWN").unwrap_or_else(|_| {
-        "https://sso.as207960.net/auth/realms/dev/.well-known/openid-configuration".to_string()
-    });
-
-    let config =
-        rust_keycloak::oauth::OAuthClientConfig::new(&client_id, &client_secret, &well_known_url)
-            .unwrap();
-
-    rust_keycloak::oauth::OAuthClient::new(config)
-}
-
-pub async fn server_identity() -> tonic::transport::Identity {
-    dotenv::dotenv().ok();
-
-    let cert_file = std::env::var("TLS_CERT_FILE").expect("TLS_CERT_FILE must be set");
-    let key_file = std::env::var("TLS_KEY_FILE").expect("TLS_KEY_FILE must be set");
-
-    let cert = tokio::fs::read(cert_file)
-        .await
-        .expect("Can't read TLS cert");
-    let key = tokio::fs::read(key_file).await.expect("Can't read TLS key");
-    tonic::transport::Identity::from_pem(cert, key)
-}
-
 fn cvt(r: libc::c_int) -> Result<libc::c_int, openssl::error::ErrorStack> {
     if r <= 0 {
         Err(openssl::error::ErrorStack::get())

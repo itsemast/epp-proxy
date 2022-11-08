@@ -116,8 +116,6 @@ async fn main() {
         )
         .get_matches();
 
-    let oauth_client = epp_proxy::oauth_client();
-    let identity = epp_proxy::server_identity().await;
     let pkcs11_engine = epp_proxy::setup_pkcs11_engine(matches.value_of("hsm_conf")).await;
 
     let conf_dir_path = matches.value_of("conf").unwrap();
@@ -224,10 +222,6 @@ async fn main() {
     let addr = matches.value_of("listen").unwrap().parse().unwrap();
 
     let svc = epp_proxy::grpc::epp_proto::epp_proxy_server::EppProxyServer::new(server);
-    let w_svc = AuthService {
-        inner: svc,
-        oauth_client,
-    };
 
     let reflection_svc = tonic_reflection::server::Builder::configure()
         .register_encoded_file_descriptor_set(epp_proxy::grpc::epp_proto::FILE_DESCRIPTOR_SET)
@@ -236,94 +230,9 @@ async fn main() {
 
     info!("Listening for gRPC commands on {}...", addr);
     tonic::transport::Server::builder()
-        .tls_config(tonic::transport::ServerTlsConfig::new().identity(identity))
-        .unwrap()
         .add_service(reflection_svc)
-        .add_service(w_svc)
+        .add_service(svc)
         .serve(addr)
         .await
         .unwrap();
-}
-
-#[derive(Clone)]
-struct AuthService<T> {
-    inner: T,
-    oauth_client: rust_keycloak::oauth::OAuthClient,
-}
-
-impl<T> tower_service::Service<http::Request<tonic::transport::Body>> for AuthService<T>
-where
-    T: tower_service::Service<http::Request<tonic::transport::Body>> + Send + Clone + 'static,
-    T::Future: Send + 'static,
-    T::Error: 'static,
-    T::Response: From<http::response::Response<tonic::body::BoxBody>> + 'static,
-{
-    type Response = T::Response;
-    type Error = T::Error;
-    type Future = futures::future::BoxFuture<'static, Result<Self::Response, Self::Error>>;
-
-    fn poll_ready(
-        &mut self,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx).map_err(Into::into)
-    }
-
-    fn call(&mut self, req: http::Request<tonic::transport::Body>) -> Self::Future {
-        let headers = req.headers().to_owned();
-        let client = self.oauth_client.clone();
-        let mut inner = self.inner.clone();
-
-        Box::pin(async move {
-            let res = match headers.get("authorization") {
-                Some(t) => match t.to_str() {
-                    Ok(t) => {
-                        let auth_token_str = t.trim();
-                        if let Some(auth_token) = auth_token_str.strip_prefix("Bearer ") {
-                            match client.verify_token(auth_token, "access-epp").await {
-                                Ok(_) => Ok(inner.call(req).await?),
-                                Err(_) => Err("Invalid auth token"),
-                            }
-                        } else {
-                            Err("Invalid auth token")
-                        }
-                    }
-                    Err(_) => Err("Invalid auth token"),
-                },
-                _ => Err("No valid auth token"),
-            };
-
-            match res {
-                Ok(r) => Ok(r),
-                Err(status) => {
-                    let mut res = http::Response::new(());
-
-                    *res.version_mut() = http::Version::HTTP_2;
-
-                    let (mut parts, _body) = res.into_parts();
-
-                    parts.headers.insert(
-                        http::header::CONTENT_TYPE,
-                        http::header::HeaderValue::from_static("application/grpc"),
-                    );
-
-                    parts
-                        .headers
-                        .insert("grpc-status", http::HeaderValue::from_static("16"));
-                    if let Ok(v) = http::HeaderValue::from_str(status) {
-                        parts.headers.insert("grpc-message", v);
-                    }
-
-                    Ok(http::Response::from_parts(parts, tonic::body::empty_body()).into())
-                }
-            }
-        })
-    }
-}
-
-impl<T> tonic::transport::server::NamedService for AuthService<T>
-where
-    T: tonic::transport::server::NamedService,
-{
-    const NAME: &'static str = T::NAME;
 }
